@@ -1,4 +1,5 @@
 import asyncio
+import struct
 from bleak import BleakScanner, BleakClient
 
 import matplotlib.pyplot as plt
@@ -6,8 +7,17 @@ import matplotlib.pyplot as plt
 
 LOGGER_DURATION = 30
 
-SERVICE_UUID  = "99b3357d-3edf-4dfd-a6de-7a409c0be76b"
-CHAR_UUID     = "20c03e1b-a755-4882-baad-5eaa29e1ce73"
+#// BLE Characteristics
+#define SAMPLE_DATA_SERV "99b3357d-3edf-4dfd-a6de-7a409c0be76b"
+#define SAMPLE_DATA_UUID "20c03e1b-a755-4882-baad-5eaa29e1ce70"
+#define SAMPLE_MSEC_UUID "20c03e1b-a755-4882-baad-5eaa29e1ce71"
+#define SAMPLE_CHAN_UUID "20c03e1b-a755-4882-baad-5eaa29e1ce72"
+
+SAMPLE_DATA_SERV  = "99b3357d-3edf-4dfd-a6de-7a409c0be76b"
+SAMPLE_DATA_UUID = "20c03e1b-a755-4882-baad-5eaa29e1ce70"
+SAMPLE_MSEC_UUID = "20c03e1b-a755-4882-baad-5eaa29e1ce71"
+SAMPLE_CHAN_UUID = "20c03e1b-a755-4882-baad-5eaa29e1ce72"
+
 
 samples = []
 
@@ -43,16 +53,43 @@ async def main():
     # 2. Connect (required for GATT/Notifications)
     async with BleakClient(device) as client:
         
+        await asyncio.sleep(0.5)  # Give ESP32 time to settle
+        
+        char = client.services.get_characteristic(SAMPLE_MSEC_UUID)
+        print(f"Char properties: {char.properties}")
+
+        '''
+        # Dump everything Bleak sees
+        for service in client.services:
+            print(f"Service: {service.uuid}")
+            for char in service.characteristics:
+                print(f"  Char: {char.uuid}  Properties: {char.properties}")
+         '''
+         
+        # Write sample interval in milliseconds.  Little Endian unsigned long (L).
+        sample_msec = 500 # 250;
+        data = struct.pack('<I', sample_msec)
+        await client.write_gatt_char(SAMPLE_MSEC_UUID, data, response=True)
+        print(f'msec: {sample_msec}')
+        
+        # Write data source (e.g., source 1 as uint8)
+        sample_chan = 1
+        data = struct.pack('<B', sample_chan)
+        await client.write_gatt_char(SAMPLE_CHAN_UUID, data, response=True)
+        print(f'Chan: {sample_chan}')
+        
         # 3. Subscribe to notifications
         print('Starting...')
-        await client.start_notify(CHAR_UUID, notification_handler)
+        await client.start_notify(SAMPLE_DATA_UUID, notification_handler)
         print('Started.')
         # 4. Keep running to receive data
         await asyncio.sleep(LOGGER_DURATION)
 
-        await client.stop_notify(CHAR_UUID)
+        await client.stop_notify(SAMPLE_DATA_UUID)
 
 asyncio.run(main())
+
+print(f'{len(samples)} samples')
 
 x = [None] * len(samples)
 value = 0

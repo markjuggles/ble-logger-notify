@@ -1,16 +1,24 @@
 /*
  * Program: BLE Logger Notify
  * Purpose: Send data to the client app via notifications.
- * v1: Constant Data
+ * v1: Constant Data.
+ * v2: Configure sample Rate and Channel.
  */
 
 #include <NimBLEDevice.h>
 #include <Arduino.h>
 #include <FastLED.h>
 
+// Board hardware settings
 #define PIN_BUTTON  9
 #define NUM_LEDS    1
 #define DATA_PIN    8
+
+// BLE Characteristics
+#define SAMPLE_DATA_SERV "99b3357d-3edf-4dfd-a6de-7a409c0be76b"
+#define SAMPLE_DATA_UUID "20c03e1b-a755-4882-baad-5eaa29e1ce70"
+#define SAMPLE_RATE_UUID "20c03e1b-a755-4882-baad-5eaa29e1ce71"
+#define SAMPLE_CHAN_UUID "20c03e1b-a755-4882-baad-5eaa29e1ce72"
 
 // LED Globals
 CRGB leds[NUM_LEDS];
@@ -26,6 +34,9 @@ volatile uint8_t  adcBufNum = 0;
 volatile bool adcBuf0Full = false;
 volatile bool adcBuf1Full = false;
 volatile bool adcOverrun = false;
+
+uint32_t SampleMsec = 0;
+uint8_t  SampleChan = 0;
 
 void ARDUINO_ISR_ATTR onTimer()
 {
@@ -51,7 +62,20 @@ void ARDUINO_ISR_ATTR onTimer()
 }
 
 NimBLEServer* pServer;
-NimBLECharacteristic* pDataChar;
+NimBLECharacteristic* pChrData;   // The data transfer characteristic.
+NimBLECharacteristic* pChrRate;   // The data rate characteristic.
+NimBLECharacteristic* pChrChan;   // The data channel characteristic.
+
+void setSampleMsec(uint32_t msec) // milliseconds
+{
+  SampleMsec = msec;
+  timerAlarm(timer, msec*1000L, true, 0);
+}
+
+void setSampleChan(uint8_t chan)
+{
+  SampleChan = chan;
+}
 
 // ServerCallbacks
 // We need to catch the disconnect to reenable advertising so that it 
@@ -61,19 +85,41 @@ class ServerCallbacks : public NimBLEServerCallbacks
 public:
     void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override
     {
-        Serial.println("Client connected");
+      Serial.println("Client connected");
     }
 
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override
     {
-        Serial.println("Client disconnected - restarting advertising");
-        NimBLEDevice::getAdvertising()->start();
+      Serial.println("Client disconnected - restarting advertising");
+      NimBLEDevice::getAdvertising()->start();
     }
 };
 
+class ConfigCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic *pCharacteristic, 
+                 NimBLEConnInfo& connInfo) override {
 
-ServerCallbacks serverCallbacks;
+        if (pCharacteristic == pChrRate) {
+            auto val = pCharacteristic->getValue();
+            if (val.size() >= 4) {
+                uint32_t rate = val[0] | (val[1] << 8) | (val[2] << 16) | (val[3] << 24);
+                setSampleMsec(rate);
+                Serial.printf("Sample rate set to %lu ms\n", rate);
+            }
+        }
+        else if (pCharacteristic == pChrChan) {
+            auto val = pCharacteristic->getValue();
+            if (val.size() >= 1) {
+                uint8_t chan = val[0];
+                setSampleChan(chan);
+                Serial.printf("Data chan set to %d\n", chan);
+            }
+        }
+    }
+};
 
+ServerCallbacks serverCallbacks;  // Callback for BLE connection
+ConfigCallbacks configCallbacks;  // Callback for characteristic writes
 
 void setup()
 {
@@ -82,20 +128,35 @@ void setup()
     pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(&serverCallbacks);
 
-    NimBLEService* pService = pServer->createService("99b3357d-3edf-4dfd-a6de-7a409c0be76b");
-    pDataChar = pService->createCharacteristic(
-        "20c03e1b-a755-4882-baad-5eaa29e1ce73",
+    NimBLEService* pService = pServer->createService(SAMPLE_DATA_SERV);
+    pChrData = pService->createCharacteristic(
+        SAMPLE_DATA_UUID,
         NIMBLE_PROPERTY::READ |
         NIMBLE_PROPERTY::NOTIFY
     );
+
+    pChrRate = pService->createCharacteristic(
+        SAMPLE_RATE_UUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE // | NIMBLE_PROPERTY::WRITE_NR
+    );
+
+    pChrRate->setCallbacks(&configCallbacks);
+    
+    pChrChan = pService->createCharacteristic(
+        SAMPLE_CHAN_UUID,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE // | NIMBLE_PROPERTY::WRITE_NR
+    );
+
+    pChrChan->setCallbacks(&configCallbacks);
+
     pService->start();
 
-    // Configure advertising ONCE, THEN start
+    // Configure advertising then start.
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
 
     NimBLEAdvertisementData advData;
     advData.setName("ESP32-DataLogger");
-    advData.addServiceUUID("99b3357d-3edf-4dfd-a6de-7a409c0be76b");  // add UUID here
+    advData.addServiceUUID(SAMPLE_DATA_SERV);
     pAdvertising->setAdvertisementData(advData);
 
     pAdvertising->start();
@@ -114,9 +175,7 @@ void setup()
     timerAlarm(timer, 500000, true, 0);
 
     // 4. Turn off pull-up.
-    //gpio_set_pull_mode((gpio_num_t)1, GPIO_FLOATING);  // Or GPIO_NUM_1
-    int value = gpio_pullup_dis(GPIO_NUM_1);
-    Serial.printf("gpio_pullup_dis() returns %d\n", value);
+    gpio_pullup_dis(GPIO_NUM_1);
 
     // Disable pull-up on A1 (GPIO1)
     gpio_set_pull_mode((gpio_num_t)1, GPIO_FLOATING);  // Or GPIO_NUM_1
@@ -169,15 +228,18 @@ void loop()
   // USE THIS TO MONITOR THE BLE CONNECTED STATE WITHOUT CALLBACKS.
   // if (pServer->getConnectedCount() > 0) {
   //     // connected — sample and notify
-  //     pDataChar->setValue(dataBuffer, dataLength);
-  //     pDataChar->notify();
+  //     pChrData->setValue(dataBuffer, dataLength);
+  //     pChrData->notify();
   // }
 
-  // To transmit data (call repeatedly in loop)
-  //pDataChar->setValue("2, 3, 5, 7, 9, 11");             // Set Values with a String.
-  pDataChar->setValue((uint8_t *) data, sizeof(data));    // Set Values with a uint8_t array[].
-  pDataChar->notify();   // <-- pushes data to connected client
-  Serial.println("Data sent");
+  if(pServer->getConnectedCount() > 0)
+  {
+    // To transmit data (call repeatedly in loop)
+    pChrData->setValue((uint8_t *) data, sizeof(data));    // Set Values with a uint8_t array[].
+    pChrData->notify();   // <-- pushes data to connected client
+    //Serial.println("Data sent");
+    Serial.printf("Data Tx (%ld)(%d)\n", SampleMsec, SampleChan);
+  }
 
   // Blink LEDs to show activity.
   leds[0] = ++loopCount & 1 ? CRGB::Red : CRGB::Green;
