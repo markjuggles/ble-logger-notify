@@ -1,8 +1,12 @@
+import sys
 import asyncio
 import struct
 from bleak import BleakScanner, BleakClient
 
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from matplotlib import style
+
 #import numpy as np
 
 LOGGER_DURATION = 30
@@ -38,7 +42,7 @@ def notification_handler(sender, data: bytearray):
     
     # Parse and log data here
 
-async def main():
+async def capture(sample_chan:int, sample_msec:int):
     # 1. Scan for the device
     device = await BleakScanner.find_device_by_name("ESP32-DataLogger", timeout=30.0)
     
@@ -67,13 +71,13 @@ async def main():
          '''
          
         # Write sample interval in milliseconds.  Little Endian unsigned long (L).
-        sample_msec = 500 # 250;
+        #sample_msec = 500 # 250;
         data = struct.pack('<I', sample_msec)
         await client.write_gatt_char(SAMPLE_MSEC_UUID, data, response=True)
         print(f'msec: {sample_msec}')
         
         # Write data source (e.g., source 1 as uint8)
-        sample_chan = 1
+        #sample_chan = 1
         data = struct.pack('<B', sample_chan)
         await client.write_gatt_char(SAMPLE_CHAN_UUID, data, response=True)
         print(f'Chan: {sample_chan}')
@@ -87,15 +91,34 @@ async def main():
 
         await client.stop_notify(SAMPLE_DATA_UUID)
 
-asyncio.run(main())
+
+if len(sys.argv) != 3:
+    print('Usage: client channel milliseconds')
+    sys.exit(1)
+    
+try:
+    asyncio.run(capture(int(sys.argv[1]), int(sys.argv[2])))
+    deltaT = float(sys.argv[2]) * 0.001
+except Exception as ex:
+    print('Failed.')
+    print(ex)
+    sys.exit(1)
 
 print(f'{len(samples)} samples')
+
+#sys.exit(0)
+
+style.use('fivethirtyeight')
+
+fig = plt.figure()
+ax1 = fig.add_subplot(1,1,1)
+
 
 x = [None] * len(samples)
 value = 0
 for ii in range(0, len(samples)):
     x[ii] = value
-    value += 0.5
+    value += deltaT
     
 plt.plot(x, samples)
 plt.title("Matplotlib Plot in a GUI Window")

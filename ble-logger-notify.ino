@@ -69,6 +69,7 @@ NimBLECharacteristic* pChrChan;   // The data channel characteristic.
 void setSampleMsec(uint32_t msec) // milliseconds
 {
   SampleMsec = msec;
+  yield();
   timerAlarm(timer, msec*1000L, true, 0);
 }
 
