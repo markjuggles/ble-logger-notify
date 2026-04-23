@@ -2,14 +2,18 @@ import sys
 import asyncio
 import struct
 from bleak import BleakScanner, BleakClient
+import json
+import os
 
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from matplotlib import style
+#import matplotlib.pyplot as plt
+#import matplotlib.animation as animation
+#from matplotlib import style
 
 #import numpy as np
 
 LOGGER_DURATION = 30
+PLOT_WIDTH = 60
+DATA_FILE = "plot_frame.json"
 
 #// BLE Characteristics
 #define SAMPLE_DATA_SERV "99b3357d-3edf-4dfd-a6de-7a409c0be76b"
@@ -28,6 +32,7 @@ samples = []
 # Callback — fires every time ESP32 calls notify()
 def notification_handler(sender, data: bytearray):
     global samples
+    
     # String Data:
     #print(f"Received: {data.decode('utf-8')} {len(data)}")
     
@@ -40,8 +45,13 @@ def notification_handler(sender, data: bytearray):
     print(f"Data: {values}")
     samples += values
     
+    # Atomic-ish write: write to temp file then replace
+    tf = DATA_FILE + ".tmp"
+    with open(tf, "w") as f:
+        json.dump(samples[:PLOT_WIDTH], f)
+    os.replace(tf, DATA_FILE)
+        
     # Parse and log data here
-
 async def capture(sample_chan:int, sample_msec:int):
     # 1. Scan for the device
     device = await BleakScanner.find_device_by_name("ESP32-DataLogger", timeout=30.0)
@@ -51,8 +61,7 @@ async def capture(sample_chan:int, sample_msec:int):
         print("Device not found. Is it advertising?")
         return
     else:
-        print('Found')
-        print(str(device))
+        print(f'{str(device)} Found')
 
     # 2. Connect (required for GATT/Notifications)
     async with BleakClient(device) as client:
@@ -71,7 +80,6 @@ async def capture(sample_chan:int, sample_msec:int):
          '''
          
         # Write sample interval in milliseconds.  Little Endian unsigned long (L).
-        #sample_msec = 500 # 250;
         data = struct.pack('<I', sample_msec)
         await client.write_gatt_char(SAMPLE_MSEC_UUID, data, response=True)
         print(f'msec: {sample_msec}')
@@ -82,13 +90,19 @@ async def capture(sample_chan:int, sample_msec:int):
         await client.write_gatt_char(SAMPLE_CHAN_UUID, data, response=True)
         print(f'Chan: {sample_chan}')
         
-        # 3. Subscribe to notifications
+        # 3. Subscribe to notifications to get the logged data.
         print('Starting...')
         await client.start_notify(SAMPLE_DATA_UUID, notification_handler)
         print('Started.')
         # 4. Keep running to receive data
         await asyncio.sleep(LOGGER_DURATION)
-
+        
+        '''
+        loops = LOGGER_DURATION
+        while loops > 0:
+            await asyncio.sleep(1)
+            loops -= 1
+        '''
         await client.stop_notify(SAMPLE_DATA_UUID)
 
 
@@ -98,7 +112,6 @@ if len(sys.argv) != 3:
     
 try:
     asyncio.run(capture(int(sys.argv[1]), int(sys.argv[2])))
-    deltaT = float(sys.argv[2]) * 0.001
 except Exception as ex:
     print('Failed.')
     print(ex)
@@ -106,29 +119,10 @@ except Exception as ex:
 
 print(f'{len(samples)} samples')
 
-#sys.exit(0)
+sys.exit(0)
 
-style.use('fivethirtyeight')
-
-fig = plt.figure()
-ax1 = fig.add_subplot(1,1,1)
-
-
-x = [None] * len(samples)
-value = 0
-for ii in range(0, len(samples)):
-    x[ii] = value
-    value += deltaT
-    
-plt.plot(x, samples)
-plt.title("Matplotlib Plot in a GUI Window")
-plt.xlabel("X axis")
-plt.ylabel("Y axis")
-plt.ylim(0, 4095)
-plt.show() # This opens a local window
 
 '''
-
 **Key receive functions:**
 | Function | Purpose |
 |---|---|
@@ -154,4 +148,3 @@ notify(data)         ──data──>    notification_handler(data)
 notify(data)         ──data──>    → write to CSV / database
 ...continuously...
 '''
-
