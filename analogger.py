@@ -4,10 +4,11 @@ import struct
 from bleak import BleakScanner, BleakClient
 import json
 import os
-
-#import matplotlib.pyplot as plt
-#import matplotlib.animation as animation
-#from matplotlib import style
+import threading
+import queue
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+#import time
 
 #import numpy as np
 
@@ -27,6 +28,9 @@ SAMPLE_MSEC_UUID = "20c03e1b-a755-4882-baad-5eaa29e1ce71"
 SAMPLE_CHAN_UUID = "20c03e1b-a755-4882-baad-5eaa29e1ce72"
 
 
+# Inter-thread communications queue.
+data_queue = queue.Queue()
+
 samples = []
 
 # Callback — fires every time ESP32 calls notify()
@@ -43,6 +47,8 @@ def notification_handler(sender, data: bytearray):
     # 16-bit, little endian:
     values = [int.from_bytes(data[i:i+2], 'little', signed=False) for i in range(0, len(data), 2)]
     print(f"Data: {values}")
+    for value in values:
+        data_queue.put(int(value))
     samples += values
     
     # Atomic-ish write: write to temp file then replace
@@ -105,17 +111,86 @@ async def capture(sample_chan:int, sample_msec:int):
         '''
         await client.stop_notify(SAMPLE_DATA_UUID)
 
+def data_capture(channel, interval):
+    ''' Call data_capture() asynchronously with the channel and interval. '''
+    asyncio.run(capture(channel, interval))
+    
+ylist = []
+xlist = []
+xpos = 0
+# Define a function to be called by FuncAnimation() which updates the plot.
+def update(frame):
+    global xpos
+    while not data_queue.empty():
+        ylist.append(data_queue.get_nowait())
+        xlist.append(xpos)
+        xpos = xpos + 1
+        
+    if len(ylist) > 200:
+        del ylist[:-200]
+        del xlist[:-200]
+    #line.set_data(range(len(ylist)), ylist)
+    line.set_data(xlist, ylist)
+    ax.relim()
+    ax.autoscale_view(scalex=True, scaley=True)
+    
+    return line,
+    
+def update1(frame):
+    global xpos
+    while not data_queue.empty():
+        ylist.append(data_queue.get_nowait())
+        xlist.append(xpos)
+        xpos += 1
+
+    if len(ylist) > 200:
+        del ylist[:-200]
+        del xlist[:-200]
+
+    line.set_data(xlist, ylist)
+
+    if len(xlist) > 1:
+        ax.set_xlim(xlist[0], xlist[-1])          # ← always matches actual data
+        ymin, ymax = min(ylist), max(ylist)
+        margin = (ymax - ymin) * 0.1 or 1.0
+        ax.set_ylim(ymin - margin, ymax + margin)
+
+    return line,                                   # blit=True is fine now
 
 if len(sys.argv) != 3:
     print('Usage: client channel milliseconds')
     sys.exit(1)
     
 try:
-    asyncio.run(capture(int(sys.argv[1]), int(sys.argv[2])))
+    # Get the channel number and the sample interval from the command line.
+    # Start the data collection thread.
+    channel = int(sys.argv[1])
+    interval = int(sys.argv[2])
+    th = threading.Thread(target=data_capture, args=(channel, interval), daemon=True)
+    th.start()
+    
 except Exception as ex:
     print('Failed.')
     print(ex)
     sys.exit(1)
+
+# Create a figure with one plotting axis.
+fig, ax = plt.subplots()
+
+# Initialize an empty line on the axes.
+# ax.plot() returns a list of Line2D objects; the comma unpacks the
+# first (and only) element into 'line'.
+# Keeping a reference to this Line2D lets us update its data efficiently
+# (e.g., with line.set_data) instead of discarding and creating a new line 
+# object for each ax.plot() call.
+line, = ax.plot([], [])
+
+# Create the animation which specifies update() as the data source function.
+ani = animation.FuncAnimation(fig, update, interval=50, blit=False)
+plt.show()
+
+
+th.join()
 
 print(f'{len(samples)} samples')
 
